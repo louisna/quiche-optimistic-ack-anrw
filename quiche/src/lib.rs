@@ -1566,6 +1566,10 @@ pub struct Connection {
 
     /// The anti-amplification limit factor.
     max_amplification_factor: usize,
+
+    /// Optimist acknowledgment extension.
+    /// Flow control scaling factor.
+    oack_scaling_factor: Option<u64>,
 }
 
 /// Creates a new server-side connection.
@@ -2007,6 +2011,8 @@ impl Connection {
             stopped_stream_remote_count: 0,
 
             max_amplification_factor: config.max_amplification_factor,
+
+            oack_scaling_factor: None,
         };
 
         if let Some(odcid) = odcid {
@@ -2744,6 +2750,9 @@ impl Connection {
             trace!("{} ignored duplicate packet {}", self.trace_id, pn);
             return Err(Error::Done);
         }
+
+        // Insert the newly received packet number in the oack extension.
+        self.oack_insert_range_pn(pn..pn + 1, epoch);
 
         // Packets with no frames are invalid.
         if payload.cap() == 0 {
@@ -3989,7 +3998,11 @@ impl Connection {
                 };
 
                 // Autotune the stream window size.
-                stream.recv.autotune_window(now, path.recovery.rtt());
+                if let Some(factor) = self.oack_scaling_factor {
+                    stream.recv.increase_window_by_factor(factor);
+                } else {
+                    stream.recv.autotune_window(now, path.recovery.rtt());
+                }
 
                 let frame = frame::Frame::MaxStreamData {
                     stream_id,
@@ -3997,6 +4010,7 @@ impl Connection {
                 };
 
                 if push_frame_to_pkt!(b, frames, frame, left) {
+                    info!("SEND MAX_STREAM_DATA frame for stream {stream_id}");
                     let recv_win = stream.recv.window();
 
                     stream.recv.update_max_data(now);
@@ -4023,11 +4037,17 @@ impl Connection {
                 flow_control.max_data() < flow_control.max_data_next()
             {
                 // Autotune the connection window size.
-                flow_control.autotune_window(now, path.recovery.rtt());
+                if let Some(factor) = self.oack_scaling_factor {
+                    flow_control.increase_window_by_factor(factor);
+                } else {
+                    flow_control.autotune_window(now, path.recovery.rtt());
+                }
 
                 let frame = frame::Frame::MaxData {
                     max: flow_control.max_data_next(),
                 };
+
+                info!("SEND MAX_DATA frame!");
 
                 if push_frame_to_pkt!(b, frames, frame, left) {
                     self.almost_full = false;
@@ -17393,6 +17413,7 @@ mod flowcontrol;
 mod frame;
 pub mod h3;
 mod minmax;
+pub mod oack;
 mod packet;
 mod path;
 mod pmtud;

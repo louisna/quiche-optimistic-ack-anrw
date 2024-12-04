@@ -40,9 +40,15 @@ const MAX_DATAGRAM_SIZE: usize = 1350;
 struct Args {
     /// URL of the server.
     url: url::Url,
+
+    /// Whether the client injects opportunist acknowledgments.
+    #[clap(long = "oack", value_parser)]
+    do_oack: bool,
 }
 
 fn main() {
+    env_logger::builder().init();
+
     let mut buf = [0; 65535];
     let mut out = [0; MAX_DATAGRAM_SIZE];
 
@@ -90,6 +96,10 @@ fn main() {
     config.set_initial_max_stream_data_bidi_local(1_000_000);
     config.set_initial_max_stream_data_bidi_remote(1_000_000);
     config.set_initial_max_stream_data_uni(1_000_000);
+    // config.set_initial_max_data(100_000_000_000);
+    // config.set_initial_max_stream_data_bidi_local(100_000_000_000);
+    // config.set_initial_max_stream_data_bidi_remote(100_000_000_000);
+    // config.set_initial_max_stream_data_uni(100_000_000_000);
     config.set_initial_max_streams_bidi(100);
     config.set_initial_max_streams_uni(100);
     config.set_disable_active_migration(true);
@@ -116,6 +126,22 @@ fn main() {
         socket.local_addr().unwrap(),
         hex_dump(&scid)
     );
+
+    // Enable oportunist acknowledgments.
+    if args.do_oack {
+        conn.enable_oack(2);
+    }
+    let mut oack_pn = 0;
+    // let mut oack_next_pn = 10;
+    let mut did_receive_pkt = false;
+    let mut last_time_ack = None;
+    let target_bitrate = 50_000_000f64;
+    let pkt_size = 1350f64;
+    let target_ppms = target_bitrate / (8f64 * pkt_size * 1000f64);
+    let mut stop_oack = false;
+    let total_nb_bytes = url.path()[1..].parse().unwrap();
+
+    let mut h3_stream_id = 0;
 
     let (write, send_info) = conn.send(&mut out).expect("initial send failed");
 
@@ -207,6 +233,42 @@ fn main() {
             debug!("processed {} bytes", read);
         }
 
+        // Retrieve the new received packets. For now, we do nothing with it.
+        let recv_pn = conn.oack_take_new_pn_app();
+        if recv_pn.as_ref().is_some_and(|rs| rs.len() > 0) {
+            did_receive_pkt = true;
+        }
+
+        // Insert new acknowledged packets.
+        if args.do_oack && did_receive_pkt && !stop_oack {
+            let now = std::time::Instant::now();
+            let upper_pn = if let Some(last_sent) = last_time_ack {
+                // Compute the number of packets using the target bitrate.
+                let elapsed = now.duration_since(last_sent);
+                let nb_pkt = target_ppms * elapsed.as_millis() as f64;
+                // println!("Send ACK 0->{} because target_ppms={:?} and elapsed={:?}", oack_pn + (nb_pkt as u64), target_ppms, elapsed.as_millis());
+                oack_pn + (nb_pkt as u64)
+            } else {
+                100
+            };
+            match conn.insert_oack_app(0..upper_pn, now, h3_stream_id, oack_pn) {
+                Ok(()) => oack_pn = upper_pn,
+                Err(quiche::Error::FlowControl) => (),
+                Err(e) => panic!("Error: {:?}", e),
+            }
+            last_time_ack = Some(now);
+
+            // oack_pn = oack_next_pn;
+            // oack_next_pn *= 2;
+            // oack_next_pn += 100;
+            // oack_pn = upper_pn;
+
+            // Close the connection if we sent acknowledgment for enough bytes.
+            if oack_pn * 1200 > total_nb_bytes {
+                stop_oack = true;
+            }
+        }
+
         debug!("done reading");
 
         if conn.is_closed() {
@@ -228,7 +290,7 @@ fn main() {
             if !req_sent {
                 info!("sending HTTP request {:?}", req);
 
-                h3_conn.send_request(&mut conn, &req, true).unwrap();
+                h3_stream_id = h3_conn.send_request(&mut conn, &req, true).unwrap();
 
                 req_sent = true;
             }
@@ -247,17 +309,19 @@ fn main() {
                     },
 
                     Ok((stream_id, quiche::h3::Event::Data)) => {
-                        while let Ok(read) =
-                            http3_conn.recv_body(&mut conn, stream_id, &mut buf)
-                        {
-                            println!(
-                                "got {} bytes of response data on stream {}",
-                                read, stream_id
-                            );
-
-                            print!("{}", unsafe {
-                                std::str::from_utf8_unchecked(&buf[..read])
-                            });
+                        if !args.do_oack {
+                            while let Ok(_read) =
+                                http3_conn.recv_body(&mut conn, stream_id, &mut buf)
+                            {
+                                // println!(
+                                //     "got {} bytes of response data on stream {}",
+                                //     read, stream_id
+                                // );
+    
+                                // print!("{}", unsafe {
+                                //     std::str::from_utf8_unchecked(&buf[..read])
+                                // });
+                            }
                         }
                     },
 

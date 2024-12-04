@@ -28,6 +28,8 @@
 extern crate log;
 
 use clap::Parser;
+#[cfg(feature = "qlog")]
+use quiche_apps::common::make_qlog_writer;
 use std::net;
 use std::path::PathBuf;
 
@@ -68,6 +70,8 @@ struct Client {
 type ClientMap = HashMap<quiche::ConnectionId<'static>, Client>;
 
 fn main() {
+    env_logger::builder().init();
+
     let mut buf = [0; 65535];
     let mut out = [0; MAX_DATAGRAM_SIZE];
 
@@ -114,6 +118,7 @@ fn main() {
     config.set_initial_max_streams_uni(100);
     config.set_disable_active_migration(true);
     config.enable_early_data();
+    config.set_cc_algorithm(quiche::CongestionControlAlgorithm::CUBIC);
 
     let h3_config = quiche::h3::Config::new().unwrap();
 
@@ -272,7 +277,8 @@ fn main() {
 
                 debug!("New connection: dcid={:?} scid={:?}", hdr.dcid, scid);
 
-                let conn = quiche::accept(
+                #[allow(unused_mut)]
+                let mut conn = quiche::accept(
                     &scid,
                     odcid.as_ref(),
                     local_addr,
@@ -280,6 +286,21 @@ fn main() {
                     &mut config,
                 )
                 .unwrap();
+
+                // Enable QLOG for this connection.
+                #[cfg(feature = "qlog")]
+                {
+                    if let Some(dir) = std::env::var_os("QLOGDIR") {
+                        let id = format!("1");
+                        let writer = make_qlog_writer(&dir, "server", &id);
+
+                        conn.set_qlog(
+                            std::boxed::Box::new(writer),
+                            "quiche-server qlog".to_string(),
+                            format!("{} id={}", "quiche-server qlog", id),
+                        );
+                    }
+                }
 
                 let client = Client {
                     conn,
@@ -547,17 +568,23 @@ fn handle_request(
 
     let mut written = 0;
     loop {
-        // Create a buffer of some data to ensure to not ask to much memory directly.
+        // Create a buffer of some data to ensure to not ask to much memory
+        // directly.
         let data = vec![42u8; 1500.min(body_size.saturating_sub(written))];
         if data.is_empty() {
             break;
         }
 
-        let written_loop = match http3_conn.send_body(conn, stream_id, &data, written + data.len() == body_size) {
+        let written_loop = match http3_conn.send_body(
+            conn,
+            stream_id,
+            &data,
+            written + data.len() == body_size,
+        ) {
             Ok(v) => v,
-    
+
             Err(quiche::h3::Error::Done) => break,
-    
+
             Err(e) => {
                 error!("{} stream send failed {:?}", conn.trace_id(), e);
                 return;
@@ -565,7 +592,6 @@ fn handle_request(
         };
         written += written_loop;
     }
-
 
     if written < body_size {
         let response = PartialResponse {
@@ -603,7 +629,8 @@ fn build_response(
 
     let (status, body_size) = match method {
         Some(b"GET") if nb_bytes.is_some() => {
-            // Just return the amount of bytes to write, otherwise if we have to store it, it will take too much memory.
+            // Just return the amount of bytes to write, otherwise if we have to
+            // store it, it will take too much memory.
             (200, nb_bytes.unwrap())
         },
 
@@ -613,10 +640,7 @@ fn build_response(
     let headers = vec![
         quiche::h3::Header::new(b":status", status.to_string().as_bytes()),
         quiche::h3::Header::new(b"server", b"quiche"),
-        quiche::h3::Header::new(
-            b"content-length",
-            &body_size.to_be_bytes(),
-        ),
+        quiche::h3::Header::new(b"content-length", &body_size.to_be_bytes()),
     ];
 
     (headers, body_size)
@@ -655,23 +679,36 @@ fn handle_writable(client: &mut Client, stream_id: u64) {
     let body_size = resp.body_size;
 
     loop {
-        // Create a buffer of some data to ensure to not ask to much memory directly.
+        // Create a buffer of some data to ensure to not ask to much memory
+        // directly.
         let data = vec![42u8; 1500.min(body_size.saturating_sub(resp.written))];
         if data.is_empty() {
+            debug!("** Data is empty!");
             break;
         }
 
-        let written = match http3_conn.send_body(conn, stream_id, &data, resp.written + data.len() == body_size) {
-            Ok(v) => v,
-    
-            Err(quiche::h3::Error::Done) => break,
-    
+        let written = match http3_conn.send_body(
+            conn,
+            stream_id,
+            &data,
+            resp.written + data.len() == body_size,
+        ) {
+            Ok(v) => {
+                debug!("** Written body {v}");
+                v
+            },
+
+            Err(quiche::h3::Error::Done) => {
+                debug!("** HTTP/3 says DONE");
+                break
+            },
+
             Err(e) => {
                 error!("{} stream send failed {:?}", conn.trace_id(), e);
                 return;
             },
         };
-    
+
         resp.written += written;
     }
 

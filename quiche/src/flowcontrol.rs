@@ -124,6 +124,12 @@ impl FlowControl {
             self.window = min_window;
         }
     }
+
+    /// Oack extension.
+    /// Increases the window by the specified factor.
+    pub fn increase_window_by_factor(&mut self, factor: u64) {
+        self.window = self.window.saturating_mul(factor);
+    }
 }
 
 #[cfg(test)]

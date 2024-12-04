@@ -868,6 +868,10 @@ pub struct PktNumSpace {
     pub crypto_0rtt_open: Option<crypto::Open>,
 
     pub crypto_stream: stream::Stream,
+
+    /// Opportunist acknowledgments.
+    /// Set of packet numbers that were received.
+    pub oack_new_recv_pn: Option<ranges::RangeSet>,
 }
 
 impl PktNumSpace {
@@ -902,6 +906,8 @@ impl PktNumSpace {
                 true,
                 stream::MAX_STREAM_WINDOW,
             ),
+
+            oack_new_recv_pn: None,
         }
     }
 

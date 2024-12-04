@@ -311,6 +311,12 @@ impl RecvBuf {
         self.flow_control.autotune_window(now, rtt);
     }
 
+    /// Oack extension.
+    /// Increases the window by the specified factor.
+    pub fn increase_window_by_factor(&mut self, factor: u64) {
+        self.flow_control.increase_window_by_factor(factor);
+    }
+
     /// Shuts down receiving data.
     pub fn shutdown(&mut self) -> Result<()> {
         if self.drain {
@@ -366,6 +372,12 @@ impl RecvBuf {
         };
 
         buf.off() == self.off
+    }
+
+    /// Oack extension.
+    /// Update the consumed bytes for the receive stream.
+    pub fn oack_add_consumed(&mut self, consumed: u64) {
+        self.flow_control.add_consumed(consumed);
     }
 }
 
