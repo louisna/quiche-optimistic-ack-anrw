@@ -44,6 +44,10 @@ struct Args {
     /// Whether the client injects opportunist acknowledgments.
     #[clap(long = "oack", value_parser)]
     do_oack: bool,
+
+    /// Target bitrate, in Mbps.
+    #[clap(long = "bitrate", default_value = "10")]
+    target_bitrate: u64,
 }
 
 fn main() {
@@ -135,7 +139,7 @@ fn main() {
     // let mut oack_next_pn = 10;
     let mut did_receive_pkt = false;
     let mut last_time_ack = None;
-    let target_bitrate = 50_000_000f64;
+    let target_bitrate = args.target_bitrate as f64 * 1_000_000f64;
     let pkt_size = 1350f64;
     let target_ppms = target_bitrate / (8f64 * pkt_size * 1000f64);
     let mut stop_oack = false;
