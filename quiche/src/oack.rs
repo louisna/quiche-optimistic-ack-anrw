@@ -106,7 +106,7 @@ impl Connection {
 
                     Err(crate::Error::Done) => {println!("Error done for stream?"); return Ok(())},
 
-                    Err(e) => return Err(e),
+                    Err(e) => { trace!("Impossible to get or create the stream {stream_id} because {:?}", e); return Err(e)},
                 };
 
                 let was_draining = stream.recv.is_draining();
