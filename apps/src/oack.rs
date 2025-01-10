@@ -16,6 +16,9 @@ pub struct OpportunistAck {
     /// Target bitrate.
     target_bitrate: f64,
 
+    /// Total number of bytes requested.
+    nb_bytes: u64,
+
     /// Smoothed RTT. Used for timeout.
     smoothed_rtt: Option<Duration>,
 
