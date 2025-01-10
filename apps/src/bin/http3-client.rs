@@ -28,6 +28,8 @@
 extern crate log;
 
 use clap::Parser;
+use quiche_apps::oack::OpportunistAck;
+use quiche_apps::common::make_qlog_writer;
 use std::net::ToSocketAddrs;
 
 use quiche::h3::NameValue;
@@ -94,7 +96,7 @@ fn main() {
         .unwrap();
 
     config.set_max_idle_timeout(5000);
-    config.set_application_protos(&[b"hq-interop"]);
+    let _ = config.set_application_protos(&[b"hq-interop"]);
     config.set_max_recv_udp_payload_size(MAX_DATAGRAM_SIZE);
     config.set_max_send_udp_payload_size(MAX_DATAGRAM_SIZE);
     config.set_initial_max_data(10_000_000);
@@ -125,6 +127,21 @@ fn main() {
         quiche::connect(url.domain(), &scid, local_addr, peer_addr, &mut config)
             .unwrap();
 
+    // Only bother with qlog if the user specified it.
+    #[cfg(feature = "qlog")]
+    {
+        if let Some(dir) = std::env::var_os("QLOGDIR") {
+            let id = format!("{scid:?}");
+            let writer = make_qlog_writer(&dir, "client", "0");
+
+            conn.set_qlog(
+                std::boxed::Box::new(writer),
+                "quiche-client qlog".to_string(),
+                format!("{} id={}", "http3-client qlog", id),
+            );
+        }
+    }
+
     info!(
         "connecting to {:} from {:} with scid {}",
         peer_addr,
@@ -132,18 +149,7 @@ fn main() {
         hex_dump(&scid)
     );
 
-    // Enable oportunist acknowledgments.
-    if args.do_oack {
-        conn.enable_oack(2);
-    }
-    let mut oack_pn = 0;
-    // let mut oack_next_pn = 10;
-    let mut did_receive_pkt = false;
-    let mut last_time_ack = None;
     let target_bitrate = args.target_bitrate as f64 * 1_000_000f64;
-    let pkt_size = 1350f64;
-    let target_ppms = target_bitrate / (8f64 * pkt_size * 1000f64);
-    let mut stop_oack = false;
     let total_nb_bytes = match url.path()[1..].parse() {
         Ok(v) => v,
         Err(_e) => url
@@ -158,8 +164,15 @@ fn main() {
             .parse()
             .unwrap(),
     };
+    // Enable oportunist acknowledgments.
+    let mut oack = if args.do_oack {
+        conn.enable_oack(10);
+        Some(OpportunistAck::new(target_bitrate, total_nb_bytes))
+    } else {
+        None
+    };
 
-    let mut h3_stream_id = None;
+    let mut h3_stream_id = Some(4);
 
     let (write, send_info) = conn.send(&mut out).expect("initial send failed");
 
@@ -200,11 +213,16 @@ fn main() {
     let mut req_sent = false;
 
     loop {
-        poll.poll(&mut events, conn.timeout()).unwrap();
+        let timeout =
+            [conn.timeout(), oack.as_ref().map(|o| o.timeout()).flatten()]
+                .iter()
+                .flatten()
+                .min()
+                .copied();
+        poll.poll(&mut events, timeout).unwrap();
 
         // Read incoming UDP packets from the socket and feed them to quiche,
         // until there are no more packets to read.
-        println!("Enter read");
         'read: loop {
             // If the event loop reported no events, it means that the timeout
             // has expired, so handle it without attempting to read packets. We
@@ -213,6 +231,10 @@ fn main() {
                 debug!("timed out");
 
                 conn.on_timeout();
+
+                if let Some(oack) = oack.as_mut() {
+                    oack.on_timeout(&mut conn, h3_stream_id.unwrap()).unwrap();
+                }
 
                 break 'read;
             }
@@ -251,59 +273,6 @@ fn main() {
 
             debug!("processed {} bytes", read);
         }
-        println!("Out of read");
-
-        // Retrieve the new received packets. For now, we do nothing with it.
-        let recv_pn = conn.oack_take_new_pn_app();
-        if recv_pn
-            .as_ref()
-            .is_some_and(|rs| rs.len() > 0 && rs.last() >= Some(10))
-        {
-            did_receive_pkt = true;
-        }
-
-        // Insert new acknowledged packets.
-        if args.do_oack && did_receive_pkt && !stop_oack && h3_stream_id.is_some()
-        {
-            let now = std::time::Instant::now();
-            let upper_pn = if let Some(last_sent) = last_time_ack {
-                // Compute the number of packets using the target bitrate.
-                let elapsed = now.duration_since(last_sent);
-                let nb_pkt = target_ppms * elapsed.as_millis() as f64;
-                // println!("Send ACK 0->{} because target_ppms={:?} and
-                // elapsed={:?}", oack_pn + (nb_pkt as u64), target_ppms,
-                // elapsed.as_millis());
-                oack_pn + (nb_pkt as u64)
-            } else {
-                100
-            };
-            match conn.insert_oack_app(
-                0..upper_pn,
-                now,
-                h3_stream_id.unwrap(),
-                oack_pn,
-            ) {
-                Ok(()) => oack_pn = upper_pn,
-                Err(quiche::Error::FlowControl) => (),
-                Err(e) => panic!("Error: {:?}", e),
-            }
-            last_time_ack = Some(now);
-
-            println!("Send oack {oack_pn:?}");
-
-            // oack_pn = oack_next_pn;
-            // oack_next_pn *= 2;
-            // oack_next_pn += 100;
-            // oack_pn = upper_pn;
-
-            // Close the connection if we sent acknowledgment for enough bytes.
-            if oack_pn * 1200 > total_nb_bytes {
-                println!("Stop oack");
-                stop_oack = true;
-            }
-        }
-
-        println!("Out of oack");
 
         debug!("done reading");
 
@@ -312,16 +281,16 @@ fn main() {
             break;
         }
 
-        // // Create a new HTTP/3 connection once the QUIC connection is established.
-        // if conn.is_established() && http3_conn.is_none() {
+        // // Create a new HTTP/3 connection once the QUIC connection is
+        // established. if conn.is_established() && http3_conn.is_none() {
         //     http3_conn = Some(
         //         quiche::h3::Connection::with_transport(&mut conn, &h3_config)
-        //         .expect("Unable to create HTTP/3 connection, check the server's uni stream limit and window size"),
-        //     );
+        //         .expect("Unable to create HTTP/3 connection, check the server's
+        // uni stream limit and window size"),     );
         // }
 
-        // // Send HTTP requests once the QUIC connection is established, and until
-        // // all requests have been sent.
+        // // Send HTTP requests once the QUIC connection is established, and
+        // until // all requests have been sent.
         // if let Some(h3_conn) = &mut http3_conn {
         //     if !req_sent {
         //         info!("sending HTTP request {:?}", req);
@@ -337,8 +306,8 @@ fn main() {
         //     // Process HTTP/3 events.
         //     loop {
         //         match http3_conn.poll(&mut conn) {
-        //             Ok((stream_id, quiche::h3::Event::Headers { list, .. })) => {
-        //                 info!(
+        //             Ok((stream_id, quiche::h3::Event::Headers { list, .. })) =>
+        // {                 info!(
         //                     "got response headers {:?} on stream id {}",
         //                     hdrs_to_strings(&list),
         //                     stream_id
@@ -381,7 +350,8 @@ fn main() {
         //                 conn.close(true, 0x100, b"kthxbye").unwrap();
         //             },
 
-        //             Ok((_, quiche::h3::Event::PriorityUpdate)) => unreachable!(),
+        //             Ok((_, quiche::h3::Event::PriorityUpdate)) =>
+        // unreachable!(),
 
         //             Ok((goaway_id, quiche::h3::Event::GoAway)) => {
         //                 info!("GOAWAY id={}", goaway_id);
@@ -404,11 +374,31 @@ fn main() {
             info!("sending HTTP request for {}", url.path());
 
             let req = format!("GET {}\r\n", url.path());
-            conn.stream_send(4, req.as_bytes(), true)
-                .unwrap();
+            conn.stream_send(4, req.as_bytes(), true).unwrap();
 
             req_sent = true;
             h3_stream_id = Some(4);
+        }
+
+        if let Some(sid) = h3_stream_id {
+            if conn.stream_readable(sid) {
+                if let Some(o) = oack.as_mut() {
+                    if !o.is_active() {
+                        o.set_active(true, &mut conn);
+                        
+                        // Send new MAX_DATA and MAX_STREAM_DATA frames to increase the
+                        // flow control limits.
+                        conn.oack_new_max_data(h3_stream_id.unwrap());
+                    }
+
+                }
+            }
+        }
+
+        for stream_id in conn.readable() {
+            while conn.stream_readable(stream_id) {
+                let _ = conn.stream_recv(stream_id, &mut out);
+            }
         }
 
         // Generate outgoing QUIC packets and send them on the UDP socket, until

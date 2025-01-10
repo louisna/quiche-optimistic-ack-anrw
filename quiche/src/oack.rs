@@ -2,6 +2,7 @@
 use std::cmp;
 use std::ops::Range;
 use std::time;
+use std::time::Duration;
 
 use crate::packet::Epoch;
 use crate::ranges::RangeSet;
@@ -151,5 +152,19 @@ impl Connection {
         }
 
         Ok(())
+    }
+
+    /// Returns the (smoothed) RTT of the first path of the connection.
+    pub fn oack_get_rtt(&self) -> Option<Duration> {
+        let path = self.paths.get(0).ok()?;
+        Some(path.recovery.rtt())
+    }
+
+    /// Schedule the sending of new MAX_DATA and MAX_STREAM_DATA frames.
+    pub fn oack_new_max_data(&mut self, stream_id: u64) {
+        if self.is_oack_enabled() {
+            self.almost_full = true;
+            self.streams.insert_almost_full(stream_id);
+        }
     }
 }
