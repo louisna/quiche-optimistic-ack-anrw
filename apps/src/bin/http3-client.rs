@@ -149,28 +149,16 @@ fn main() {
         hex_dump(&scid)
     );
 
-    let target_bitrate = args.target_bitrate as f64 * 1_000_000f64;
-    let total_nb_bytes = match url.path()[1..].parse() {
-        Ok(v) => v,
-        Err(_e) => url
-            .path()
-            .split("-")
-            .skip(1)
-            .next()
-            .unwrap()
-            .split(".")
-            .next()
-            .unwrap()
-            .parse()
-            .unwrap(),
-    };
     // Enable oportunist acknowledgments.
     let mut oack = if args.do_oack {
-        conn.enable_oack(10);
-        Some(OpportunistAck::new(target_bitrate, total_nb_bytes))
+        conn.enable_oack(1000);
+        Some(OpportunistAck::new("client-inf-2.sqlog").unwrap())
     } else {
         None
     };
+
+    // Whether we did increase the flow control rate.
+    let mut did_increase_max_data = false;
 
     let mut h3_stream_id = Some(4);
 
@@ -214,7 +202,7 @@ fn main() {
 
     loop {
         let timeout =
-            [conn.timeout(), oack.as_ref().map(|o| o.timeout()).flatten()]
+            [conn.timeout(), oack.as_mut().map(|o| o.timeout()).flatten()]
                 .iter()
                 .flatten()
                 .min()
@@ -232,11 +220,11 @@ fn main() {
 
                 conn.on_timeout();
 
-                if let Some(oack) = oack.as_mut() {
-                    oack.on_timeout(&mut conn, h3_stream_id.unwrap()).unwrap();
-                }
-
                 break 'read;
+            }
+
+            if let Some(oack) = oack.as_mut() {
+                oack.on_timeout(&mut conn, h3_stream_id.unwrap()).unwrap();
             }
 
             let (len, from) = match socket.recv_from(&mut buf) {
@@ -272,6 +260,14 @@ fn main() {
             };
 
             debug!("processed {} bytes", read);
+        }
+
+        if conn.is_established() {
+            if let Some(oack) = oack.as_mut() {
+                if !oack.is_active() {
+                    oack.set_active(true);
+                }
+            }
         }
 
         debug!("done reading");
@@ -382,9 +378,9 @@ fn main() {
 
         if let Some(sid) = h3_stream_id {
             if conn.stream_readable(sid) {
-                if let Some(o) = oack.as_mut() {
-                    if !o.is_active() {
-                        o.set_active(true, &mut conn);
+                if oack.is_some() {
+                    if !did_increase_max_data {
+                        did_increase_max_data = true;
                         
                         // Send new MAX_DATA and MAX_STREAM_DATA frames to increase the
                         // flow control limits.

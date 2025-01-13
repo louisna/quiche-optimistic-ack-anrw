@@ -1,81 +1,115 @@
 //! This module attempts to simulate the start phase of the CUBIC congestion
 //! control algorithm.
 
+use jsonseq;
 use std::error::Error;
+use std::ops::Range;
 use std::time::Duration;
 use std::time::Instant;
 
 use quiche::Connection;
 
-const INITIAL_CONGESTION_WINDOW_PACKETS: u64 = 10;
-
 pub struct OpportunistAck {
     /// Whether the opportunist ack is currently active.
     active: bool,
 
-    /// Target bitrate.
-    target_bitrate: f64,
+    /// List of all optimist acknowledgments the client has to send.
+    oack: Vec<(Duration, Vec<Range<u64>>)>,
 
-    /// Total number of bytes requested.
-    nb_bytes: u64,
+    /// Time at which we start sending oack.
+    start_time: Option<Instant>,
 
-    /// Smoothed RTT. Used for timeout.
-    smoothed_rtt: Option<Duration>,
+    /// Current index in the list.
+    idx: usize,
 
-    /// Last timeout.
-    last_timeout: Option<Instant>,
-
-    /// Number of packets acknowledged in the last RTT flight.
-    nb_pkt_oack: u64,
-
-    /// Last (highest) acknowledged packet number.
-    highest_oack_pn: u64,
+    /// Last maximum packet that we acked.
+    last_max_pn: u64,
 }
 
 impl OpportunistAck {
-    pub fn new(target_bitrate: f64, nb_bytes: u64) -> Self {
-        Self {
+    pub fn new(qlog_filename: &str) -> std::result::Result<Self, Box<dyn Error>> {
+        Ok(Self {
             active: false,
-            target_bitrate,
-            nb_bytes,
-            smoothed_rtt: None,
-            last_timeout: None,
-            nb_pkt_oack: INITIAL_CONGESTION_WINDOW_PACKETS,
-            highest_oack_pn: 0,
-        }
+            oack: Self::read_qlog(qlog_filename)?,
+            start_time: None,
+            idx: 0,
+            last_max_pn: 0,
+        })
     }
 
-    pub fn set_active(&mut self, v: bool, conn: &mut Connection) {
+    pub fn set_active(&mut self, v: bool) {
         self.active = v;
-        if v {
-            println!("SET THE SMOOTHED RTT TO: {:?}", conn.oack_get_rtt());
-            self.smoothed_rtt = conn.oack_get_rtt();
-            self.last_timeout = Some(Instant::now());
-        }
     }
 
     pub fn is_active(&self) -> bool {
         self.active
     }
 
-    pub fn timeout(&self) -> Option<Duration> {
-        if !self.active || self.smoothed_rtt.is_none() {
-            return None;
+    /// Reads a QLOG file and generates the times at which we must send an ACK.
+    /// This function is very ugly because I don't know how to properly read a
+    /// JSONSeq file.
+    fn read_qlog(
+        qlog_filename: &str,
+    ) -> std::result::Result<Vec<(Duration, Vec<Range<u64>>)>, Box<dyn Error>>
+    {
+        let file = std::fs::File::open(qlog_filename)?;
+        let json_data = jsonseq::JsonSeqReader::new(file);
+        println!("READ SQLOG");
+
+        let mut ack_to_send = Vec::new();
+
+        for data in json_data {
+            let d = data?;
+            if d["name"].as_str() == Some("transport:packet_sent") {
+                // Only get ACK frames.
+                let frames_opt = d["data"]["frames"].as_array();
+
+                if let Some(frames) = frames_opt {
+                    for frame in frames.iter() {
+                        if frame["frame_type"].as_str() == Some("ack") {
+                            // Potentially send multiple ranges in the same
+                            // packet.
+                            let mut ranges = Vec::new();
+
+                            for range in frame["acked_ranges"].as_array().unwrap()
+                            {
+                                let from = range[0].as_u64().unwrap();
+                                let to = range[1].as_u64().unwrap();
+                                ranges.push(from..to + 1);
+                            }
+
+                            // Get the time at which we send.
+                            let time_to_send = (d["time"].as_f64().unwrap() *
+                                1_000_000.0)
+                                as u64;
+                            let time_to_send =
+                                std::time::Duration::from_nanos(time_to_send);
+
+                            ack_to_send.push((time_to_send, ranges));
+                        }
+                    }
+                }
+            }
         }
 
-        if self.last_timeout.is_none() {
-            return Some(Duration::ZERO);
+        Ok(ack_to_send)
+    }
+
+    pub fn timeout(&mut self) -> Option<Duration> {
+        if !self.is_active() {
+            return None;
         }
 
         let now = Instant::now();
 
-        let timeout = Some(
-            (self.last_timeout.unwrap() + self.smoothed_rtt.unwrap()).duration_since(now)
-        );
+        if self.start_time.is_none() {
+            self.start_time = Some(now);
+        }
 
-        info!("Timeout for oack is {:?}", timeout);
+        let start_time = self.start_time.unwrap();
+        let next_timeout = self.oack.get(self.idx)?.0;
 
-        return timeout;
+        Some((start_time + next_timeout + Duration::from_micros(2000)).duration_since(now))
     }
 
     // We assume that each RTT, we double the amount of data that was received in
@@ -86,29 +120,32 @@ impl OpportunistAck {
     ) -> Result<(), Box<dyn Error>> {
         if self.timeout() == Some(Duration::ZERO) {
             let now = Instant::now();
-    
-            // Update last timeout.
-            self.last_timeout = Some(Instant::now());
-
-            let new_highest = self.highest_oack_pn + self.nb_pkt_oack;
-
-            // Only double until we reach the target bitrate.
-            // The bitrate is just an estimation.
-            let bitrate_estimation = (1350 * 8 * self.nb_pkt_oack * 1000) as f64 / self.smoothed_rtt.unwrap().as_millis() as f64;
-            info!("Bitrate estimation: {:?} vs target_bitrate: {:?} because pkt oack={:?}", bitrate_estimation, self.target_bitrate, self.nb_pkt_oack);
-            if bitrate_estimation < self.target_bitrate {
-                self.nb_pkt_oack = (self.nb_pkt_oack as f64 * 1.1) as u64;
+            if self.start_time.is_none() {
+                self.start_time = Some(now);
             }
 
-            info!("Insert 0..{new_highest}");
-            conn.insert_oack_app(0..new_highest, now, stream_id, self.highest_oack_pn)?;
-            self.highest_oack_pn = new_highest;
+            let ranges = &self
+                .oack
+                .get(self.idx)
+                .ok_or("INDEX ERROR".to_string())?.1;
 
-            // // Set the opportunist ack to false if we acked the whole data already.
-            // if new_highest * 1350 >= self.nb_bytes {
-            //     println!("SET MY OACK TO FALSE");
-            //     self.active = false;
-            // }
+            info!("Insert acknowledgment for: {:?}", ranges);
+            for range in ranges.iter() {
+                conn.insert_oack_app(
+                    range.clone(),
+                    now,
+                    stream_id,
+                    self.last_max_pn,
+                )?;
+
+                self.last_max_pn = range.end;
+            }
+
+            // Increase the index and set to false if we go out of bound.
+            self.idx += 1;
+            if self.idx >= self.oack.len() {
+                self.set_active(false);
+            }
         }
 
         Ok(())
