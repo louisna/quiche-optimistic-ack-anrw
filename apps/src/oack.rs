@@ -109,7 +109,7 @@ impl OpportunistAck {
         let start_time = self.start_time.unwrap();
         let next_timeout = self.oack.get(self.idx)?.0;
 
-        Some((start_time + next_timeout + Duration::from_micros(2000)).duration_since(now))
+        Some((start_time + next_timeout + Duration::from_micros(1)).duration_since(now))
     }
 
     // We assume that each RTT, we double the amount of data that was received in

@@ -594,6 +594,7 @@ impl Handshake {
 
             _ => {
                 let ssl_err = self.get_error(bssl_result);
+                info!("MAP SSL RESULT: {ssl_err}");
                 match ssl_err {
                     // SSL_ERROR_SSL
                     1 => {

@@ -4495,9 +4495,10 @@ impl Connection {
         //
         // 2) this is a probing packet towards an unvalidated peer address.
         if (has_initial || !path.validated()) &&
-            pkt_type == packet::Type::Short &&
-            left >= 1
+            (pkt_type == packet::Type::Short) &&
+            left >= 1 || (pkt_type == packet::Type::Initial && left >= 1)
         {
+            info!("ADD PADDING TO THE PACKET");
             let frame = frame::Frame::Padding { len: left };
 
             if push_frame_to_pkt!(b, frames, frame, left) {
@@ -4590,6 +4591,8 @@ impl Connection {
             Some(ref v) => v,
             None => return Err(Error::InvalidState),
         };
+
+        info!("SEND SINGLE {pn} with {payload_len} payload");
 
         let written = packet::encrypt_pkt(
             &mut b,
@@ -6766,6 +6769,7 @@ impl Connection {
             Ok(_) => (),
 
             Err(Error::Done) => {
+                info!("Do handshake");
                 // Try to parse transport parameters as soon as the first flight
                 // of handshake data is processed.
                 //
@@ -6778,8 +6782,11 @@ impl Connection {
                     let peer_params =
                         TransportParams::decode(raw_params, self.is_server)?;
 
+                    info!("Parse peer transport params: {:?}", peer_params);
                     self.parse_peer_transport_params(peer_params)?;
                 }
+
+                info!("Lies here in do handshake...");
 
                 return Ok(());
             },
@@ -6799,6 +6806,8 @@ impl Connection {
 
             self.parse_peer_transport_params(peer_params)?;
         }
+
+        info!("HANDSHAKE COMPLETED: {}", self.handshake_completed);
 
         if self.handshake_completed {
             // The handshake is considered confirmed at the server when the
@@ -7104,6 +7113,7 @@ impl Connection {
             },
 
             frame::Frame::Crypto { data } => {
+                info!("RECEIVE FRAME CRYPTO");
                 if data.max_off() >= MAX_CRYPTO_STREAM_OFFSET {
                     return Err(Error::CryptoBufferExceeded);
                 }
@@ -7119,10 +7129,14 @@ impl Connection {
 
                 let stream = &mut self.pkt_num_spaces[epoch].crypto_stream;
 
+                let mut total = 0;
                 while let Ok((read, _)) = stream.recv.emit(&mut crypto_buf) {
+                    total += read;
                     let recv_buf = &crypto_buf[..read];
                     self.handshake.provide_data(level, recv_buf)?;
                 }
+
+                info!("FED {total} bytes to the crypto at epoch {epoch:?}");
 
                 self.do_handshake(now)?;
             },
@@ -7392,6 +7406,7 @@ impl Connection {
             },
 
             frame::Frame::HandshakeDone => {
+                info!("CLIENT RECEIVES FRAME HANDSHAKE DONE");
                 if self.is_server {
                     return Err(Error::InvalidPacket);
                 }
