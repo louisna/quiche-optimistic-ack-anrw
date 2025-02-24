@@ -26,6 +26,7 @@
 
 use crate::args::*;
 use crate::common::*;
+use crate::oack::OpportunistAck;
 
 use std::net::ToSocketAddrs;
 
@@ -230,6 +231,14 @@ pub fn connect(
         scid,
     );
 
+    // Enable optimist acknowledgments.
+    let mut oack = if let Some(qlog_file) = args.oack {
+        conn.enable_oack(1000);
+        Some(OpportunistAck::new(&qlog_file).unwrap())
+    } else {
+        None
+    };
+
     let (write, send_info) = conn.send(&mut out).expect("initial send failed");
 
     while let Err(e) = socket.send_to(&out[..write], send_info.to) {
@@ -257,7 +266,13 @@ pub fn connect(
 
     loop {
         if !conn.is_in_early_data() || app_proto_selected {
-            poll.poll(&mut events, conn.timeout()).unwrap();
+            let timeout =
+                [conn.timeout(), oack.as_mut().map(|o| o.timeout()).flatten()]
+                    .iter()
+                    .flatten()
+                    .min()
+                    .copied();
+            poll.poll(&mut events, timeout).unwrap();
         }
 
         // If the event loop reported no events, it means that the timeout
@@ -267,6 +282,10 @@ pub fn connect(
             trace!("timed out");
 
             conn.on_timeout();
+        }
+
+        if let Some(oack) = oack.as_mut() {
+            oack.on_timeout(&mut conn, 4).unwrap();
         }
 
         // Read incoming UDP packets from the socket and feed them to quiche,
@@ -328,6 +347,14 @@ pub fn connect(
                 };
 
                 trace!("{}: processed {} bytes", local_addr, read);
+            }
+        }
+
+        if conn.is_established() {
+            if let Some(oack) = oack.as_mut() {
+                if !oack.is_active() {
+                    oack.set_active(true);
+                }
             }
         }
 

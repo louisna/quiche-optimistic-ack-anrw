@@ -57,6 +57,8 @@ impl OpportunistAck {
         println!("READ SQLOG");
 
         let mut ack_to_send = Vec::new();
+        // We shift the packet numbers to 0 in case this trace was generated with a server starting at a random packet number.
+        let mut shift = None;
 
         for data in json_data {
             let d = data?;
@@ -74,8 +76,12 @@ impl OpportunistAck {
                             for range in frame["acked_ranges"].as_array().unwrap()
                             {
                                 let from = range[0].as_u64().unwrap();
+                                if shift.is_none() {
+                                    shift = Some(from);
+                                    info!("This is the shift: {:?}", shift);
+                                }
                                 let to = range[1].as_u64().unwrap();
-                                ranges.push(from..to + 1);
+                                ranges.push(from - shift.unwrap()..to - shift.unwrap() + 1);
                             }
 
                             // Get the time at which we send.
@@ -129,10 +135,14 @@ impl OpportunistAck {
                 .get(self.idx)
                 .ok_or("INDEX ERROR".to_string())?.1;
 
-            info!("Insert acknowledgment for: {:?}", ranges);
+            // The app might start at a random packet number, like mvfst.
+            let shift = conn.oack_get_first_pn();
+
             for range in ranges.iter() {
+                let range_shift = range.start + shift..range.end + shift;
+                info!("Insert acknowledgment for: {:?}", range_shift);
                 conn.insert_oack_app(
-                    range.clone(),
+                    range_shift,
                     now,
                     stream_id,
                     self.last_max_pn,

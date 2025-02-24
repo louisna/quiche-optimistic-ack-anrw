@@ -12,9 +12,9 @@ set -e
 QUICHE_DIR=/quiche
 WWW_DIR=/www
 DOWNLOAD_DIR=/downloads
-QUICHE_CLIENT=quiche-client
+QUICHE_CLIENT=http3-client
 QUICHE_SERVER=quiche-server
-QUICHE_CLIENT_OPT="--no-verify --dump-responses ${DOWNLOAD_DIR} --wire-version 00000001"
+QUICHE_CLIENT_OPT="--hq-interop"
 # interop container has tso off. need to disable gso as well.
 QUICHE_SERVER_OPT_COMMON="--listen [::]:443 --root $WWW_DIR --cert /certs/cert.pem --key /certs/priv.key --disable-gso --disable-pacing"
 QUICHE_SERVER_OPT="$QUICHE_SERVER_OPT_COMMON --no-retry "
@@ -97,6 +97,8 @@ run_quiche_client_tests () {
             ;;
 
         *)
+            echo "$QUICHE_DIR/$QUICHE_CLIENT $QUICHE_CLIENT_OPT \
+                $CLIENT_PARAMS $REQUESTS" >& $LOG
             $QUICHE_DIR/$QUICHE_CLIENT $QUICHE_CLIENT_OPT \
                 $CLIENT_PARAMS $REQUESTS >& $LOG
             ;;
@@ -117,7 +119,7 @@ mkdir -p $LOG_DIR
 if [ "$ROLE" == "client" ]; then
     # Wait for the simulator to start up.
     wait-for-it sim:57832 -s -t 30
-    echo "## Starting quiche client..."
+    echo "## Starting quoack client..."
     echo "## Client params: $CLIENT_PARAMS"
     echo "## Requests: $REQUESTS"
     echo "## Test case: $TESTCASE"

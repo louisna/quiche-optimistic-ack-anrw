@@ -1570,6 +1570,10 @@ pub struct Connection {
     /// Optimist acknowledgment extension.
     /// Flow control scaling factor.
     oack_scaling_factor: Option<u64>,
+
+    /// Optimist acknowledgment extension.
+    /// The peer might start with a random packet number. Log it.
+    oack_first_app_pn: Option<u64>,
 }
 
 /// Creates a new server-side connection.
@@ -2013,6 +2017,7 @@ impl Connection {
             max_amplification_factor: config.max_amplification_factor,
 
             oack_scaling_factor: None,
+            oack_first_app_pn: None,
         };
 
         if let Some(odcid) = odcid {
@@ -3133,6 +3138,13 @@ impl Connection {
             self.pkt_num_spaces[epoch].largest_rx_pkt_time = now;
         }
 
+        if self.pkt_num_spaces[epoch].largest_rx_pkt_num + 1 != pn {
+            println!("SEEING A GAP IN THE PACKET NUMBER SEQUENCE!! {} vs {}", self.pkt_num_spaces[epoch].largest_rx_pkt_num, pn);
+            if self.oack_first_app_pn.is_none() && epoch == packet::Epoch::Application {
+                self.oack_first_app_pn = Some(pn);
+            }
+        }
+
         self.pkt_num_spaces[epoch].recv_pkt_num.insert(pn);
 
         self.pkt_num_spaces[epoch].recv_pkt_need_ack.push_item(pn);
@@ -4010,7 +4022,6 @@ impl Connection {
                 };
 
                 if push_frame_to_pkt!(b, frames, frame, left) {
-                    info!("SEND MAX_STREAM_DATA frame for stream {stream_id}");
                     let recv_win = stream.recv.window();
 
                     stream.recv.update_max_data(now);
@@ -4046,8 +4057,6 @@ impl Connection {
                 let frame = frame::Frame::MaxData {
                     max: flow_control.max_data_next(),
                 };
-
-                info!("SEND MAX_DATA frame!");
 
                 if push_frame_to_pkt!(b, frames, frame, left) {
                     self.almost_full = false;
@@ -4591,8 +4600,6 @@ impl Connection {
             Some(ref v) => v,
             None => return Err(Error::InvalidState),
         };
-
-        info!("SEND SINGLE {pn} with {payload_len} payload");
 
         let written = packet::encrypt_pkt(
             &mut b,

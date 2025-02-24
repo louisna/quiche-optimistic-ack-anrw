@@ -1,4 +1,4 @@
-FROM rust:1.67 as build
+FROM rust:1.74 as build
 
 WORKDIR /build
 
@@ -22,6 +22,7 @@ RUN apt-get update && apt-get install -y ca-certificates && \
 COPY --from=build \
      /build/apps/target/debug/quiche-client \
      /build/apps/target/debug/quiche-server \
+     /build/apps/target/debug/http3-client \
      /usr/local/bin/
 
 ENV PATH="/usr/local/bin/:${PATH}"
@@ -41,9 +42,10 @@ RUN apt-get update && apt-get install -y wait-for-it && rm -rf /var/lib/apt/list
 COPY --from=build \
      /build/apps/target/debug/quiche-client \
      /build/apps/target/debug/quiche-server \
+     /build/apps/target/debug/http3-client \
      /build/apps/run_endpoint.sh \
      ./
 
-ENV RUST_LOG=trace
+ENV RUST_LOG=error
 
 ENTRYPOINT [ "./run_endpoint.sh" ]

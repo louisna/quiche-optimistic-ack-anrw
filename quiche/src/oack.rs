@@ -167,4 +167,10 @@ impl Connection {
             self.streams.insert_almost_full(stream_id);
         }
     }
+
+    #[inline]
+    /// Return the first packet number received on the Application epoch.
+    pub fn oack_get_first_pn(&self) -> u64 {
+        self.oack_first_app_pn.unwrap_or(0)
+    }
 }

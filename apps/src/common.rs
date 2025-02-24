@@ -798,7 +798,8 @@ impl Http3Conn {
                         b":path",
                         url[url::Position::BeforePath..].as_bytes(),
                     ),
-                    quiche::h3::Header::new(b"user-agent", b"quiche"),
+                    quiche::h3::Header::new(b"user-agent", b"curl/7.88.1"),
+                    quiche::h3::Header::new(b"accept", b"*/*"),
                 ];
 
                 let priority = if send_priority_update {
