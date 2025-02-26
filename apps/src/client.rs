@@ -234,7 +234,7 @@ pub fn connect(
     // Enable optimist acknowledgments.
     let mut oack = if let Some(qlog_file) = args.oack {
         conn.enable_oack(1000);
-        Some(OpportunistAck::new(&qlog_file).unwrap())
+        Some(OpportunistAck::new(Some(&qlog_file)).unwrap())
     } else {
         None
     };

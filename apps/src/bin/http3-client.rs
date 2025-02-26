@@ -47,9 +47,10 @@ struct Args {
     #[clap(long = "oack", value_parser)]
     do_oack: bool,
 
-    /// Target bitrate, in Mbps.
-    #[clap(long = "bitrate", default_value = "10")]
-    target_bitrate: u64,
+    /// OACK QLOG file path.
+    /// If not provided, uses the "max received pn" approach instead.
+    #[clap(long = "qlog")]
+    qlog_path: Option<String>,
 
     /// Whether to use HTTP/0.9 for QUIC interop instead of HTTP/3.
     #[clap(long = "hq-interop")]
@@ -177,7 +178,7 @@ fn main() {
     // Enable oportunist acknowledgments.
     let mut oack = if args.do_oack {
         conn.enable_oack(1000);
-        Some(OpportunistAck::new("client-inft-short.sqlog").unwrap())
+        Some(OpportunistAck::new(args.qlog_path.as_deref()).unwrap())
     } else {
         None
     };

@@ -80,6 +80,7 @@ pub struct CommonArgs {
 /// --qpack-max-table-capacity BYTES  Max capacity of dynamic QPACK decoding.
 /// --qpack-blocked-streams STREAMS  Limit of blocked streams while decoding.
 /// --initial-cwnd-packets      Size of initial congestion window, in packets.
+/// --oack QLOG                 QLOG file to read for optimistc ack.
 ///
 /// [`Docopt`]: https://docs.rs/docopt/1.1.0/docopt/
 impl Args for CommonArgs {
@@ -289,7 +290,7 @@ Options:
   --session-file PATH      File used to cache a TLS session for resumption.
   --source-port PORT       Source port to use when connecting to the server [default: 0].
   --initial-cwnd-packets PACKETS   The initial congestion window size in terms of packet count [default: 10].
-  --oack                   QLOG    Path to the QLOG file if optimist ack (oack) is used.
+  --oack QLOG              Path to the QLOG file if optimist ack (oack) is used.
   -h --help                Show this screen.
 ";
 
@@ -388,9 +389,8 @@ impl Args for ClientArgs {
 
         let send_priority_update = args.get_bool("--send-priority-update");
 
-        let oack = args.get_str("--oack");
-        let oack = if !oack.is_empty() {
-            Some(oack.to_string())
+        let oack = if args.get_bool("--oack") {
+            Some(args.get_str("--oack").to_string())
         } else {
             None
         };
