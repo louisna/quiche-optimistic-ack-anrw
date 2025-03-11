@@ -173,4 +173,10 @@ impl Connection {
     pub fn oack_get_first_pn(&self) -> u64 {
         self.oack_first_app_pn.unwrap_or(0)
     }
+
+    #[inline]
+    /// Returns the maximum packet number received on the first path on the Application epoch.
+    pub fn oack_get_max_pn(&self) -> u64 {
+        self.pkt_num_spaces[Epoch::Application].largest_rx_pkt_num
+    }
 }

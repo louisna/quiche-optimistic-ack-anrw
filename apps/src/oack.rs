@@ -196,15 +196,24 @@ pub struct OpportunistMaxPn {
 
     /// Whether we are active.
     active: bool,
+
+    /// Potential shift with respect to the maximum received packet number.
+    shift_pn: Option<u64>,
+
+    /// Potential lag before adding shifting to the maximum received packet
+    /// number.
+    lag_shift: Option<u64>,
 }
 
 impl OpportunistMaxPn {
     /// Creates a new instance.
-    pub fn new() -> Self {
+    pub fn new(shift_pn: Option<u64>, lag_shift: Option<u64>) -> Self {
         Self {
             last_max_pn: 0,
             next_max_pn: 0,
             active: false,
+            shift_pn,
+            lag_shift: shift_pn.map(|_| lag_shift).flatten(),
         }
     }
 
@@ -217,7 +226,7 @@ impl OpportunistMaxPn {
     ) -> Result<(), Box<dyn Error>> {
         if let Some(Duration::ZERO) = self.timeout() {
             let range = 0..self.next_max_pn;
-            
+
             let now = Instant::now();
             conn.insert_oack_app(range, now, stream_id, self.last_max_pn)?;
 
@@ -236,7 +245,14 @@ impl OpportunistMaxPn {
     }
 
     pub fn on_new_max_recv_pn(&mut self, pn: u64) {
-        self.next_max_pn = std::cmp::max(self.next_max_pn, pn);
+        let shift_pn = self
+            .lag_shift
+            .map(|lag| lag >= pn)
+            .unwrap_or(true)
+            .then_some(self.shift_pn)
+            .flatten()
+            .unwrap_or(0);
+        self.next_max_pn = std::cmp::max(self.next_max_pn, pn + shift_pn);
     }
 }
 
@@ -245,17 +261,19 @@ pub enum OpportunistAck {
     QLOG(OpportunistQlog),
 
     /// Using the maximum received packet number.
+    /// Potentially shift the maximum received packet number with som lag.
     MaxPn(OpportunistMaxPn),
 }
 
 impl OpportunistAck {
     pub fn new(
-        qlog_filename: Option<&str>,
+        qlog_filename: Option<&str>, shift_pn: Option<u64>,
+        lag_shift: Option<u64>,
     ) -> std::result::Result<Self, Box<dyn Error>> {
         if let Some(filename) = qlog_filename {
             Ok(Self::QLOG(OpportunistQlog::new(filename)?))
         } else {
-            Ok(Self::MaxPn(OpportunistMaxPn::new()))
+            Ok(Self::MaxPn(OpportunistMaxPn::new(shift_pn, lag_shift)))
         }
     }
 

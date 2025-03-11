@@ -55,6 +55,14 @@ struct Args {
     /// Whether to use HTTP/0.9 for QUIC interop instead of HTTP/3.
     #[clap(long = "hq-interop")]
     hq_interop: bool,
+
+    /// OACK packet number shift.
+    #[clap(long = "shift-pn")]
+    shift_pn: Option<u64>,
+
+    /// OACK packet number lag shift.
+    #[clap(long = "lag-shift")]
+    lag_shift: Option<u64>,
 }
 
 fn main() {
@@ -125,9 +133,9 @@ fn main() {
             .append(true)
             .open("/logs/keylog.txt")
             .unwrap();
-    
+
         keylog = Some(file);
-    
+
         config.log_keys();
     }
 
@@ -178,7 +186,14 @@ fn main() {
     // Enable oportunist acknowledgments.
     let mut oack = if args.do_oack {
         conn.enable_oack(1000);
-        Some(OpportunistAck::new(args.qlog_path.as_deref()).unwrap())
+        Some(
+            OpportunistAck::new(
+                args.qlog_path.as_deref(),
+                args.shift_pn,
+                args.lag_shift,
+            )
+            .unwrap(),
+        )
     } else {
         None
     };

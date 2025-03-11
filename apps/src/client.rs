@@ -232,9 +232,9 @@ pub fn connect(
     );
 
     // Enable optimist acknowledgments.
-    let mut oack = if let Some(qlog_file) = args.oack {
+    let mut oack = if let Some(_qlog_file) = args.oack {
         conn.enable_oack(1000);
-        Some(OpportunistAck::new(Some(&qlog_file)).unwrap())
+        Some(OpportunistAck::new(None, None, None).unwrap())
     } else {
         None
     };
@@ -347,6 +347,11 @@ pub fn connect(
                 };
 
                 trace!("{}: processed {} bytes", local_addr, read);
+            }
+
+            if let Some(oack) = oack.as_mut() {
+                let max_pn = conn.oack_get_max_pn();
+                oack.on_new_max_recv_pn(max_pn);
             }
         }
 
