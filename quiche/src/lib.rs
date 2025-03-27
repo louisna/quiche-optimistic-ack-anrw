@@ -1574,6 +1574,10 @@ pub struct Connection {
     /// Optimist acknowledgment extension.
     /// The peer might start with a random packet number. Log it.
     oack_first_app_pn: Option<u64>,
+
+    /// Optimistic acknowledgment extension.
+    /// The maximum true received packet number.
+    oack_max_recv_pn: u64,
 }
 
 /// Creates a new server-side connection.
@@ -2018,6 +2022,7 @@ impl Connection {
 
             oack_scaling_factor: None,
             oack_first_app_pn: None,
+            oack_max_recv_pn: 0,
         };
 
         if let Some(odcid) = odcid {
@@ -2750,6 +2755,8 @@ impl Connection {
         .map_err(|e| {
             drop_pkt_on_err(e, self.recv_count, self.is_server, &self.trace_id)
         })?;
+
+        self.oack_max_recv_pn = cmp::max(self.oack_max_recv_pn, pn);
 
         if self.pkt_num_spaces[epoch].recv_pkt_num.contains(pn) {
             trace!("{} ignored duplicate packet {}", self.trace_id, pn);

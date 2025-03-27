@@ -87,7 +87,7 @@ impl FlowControl {
     /// This happens when the available window is smaller than the half
     /// of the current window.
     pub fn should_update_max_data(&self) -> bool {
-        let available_window = self.max_data - self.consumed;
+        let available_window = self.max_data.saturating_sub(self.consumed);
 
         available_window < (self.window / 2)
     }

@@ -126,17 +126,17 @@ fn main() {
     config.set_initial_max_streams_uni(100);
     config.set_disable_active_migration(true);
 
-    let mut keylog = None;
+    let mut keylog: Option<std::fs::File> = None;
     if args.hq_interop {
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("/logs/keylog.txt")
-            .unwrap();
+        // let file = std::fs::OpenOptions::new()
+        //     .create(true)
+        //     .append(true)
+        //     .open("/logs/keylog.txt")
+        //     .unwrap();
 
-        keylog = Some(file);
+        // keylog = Some(file);
 
-        config.log_keys();
+        // config.log_keys();
     }
 
     // let mut http3_conn = None;
@@ -151,8 +151,9 @@ fn main() {
     let local_addr = socket.local_addr().unwrap();
 
     // Create a QUIC connection and initiate handshake.
+    let domain = url.domain().or(Some("server4"));
     let mut conn =
-        quiche::connect(url.domain(), &scid, local_addr, peer_addr, &mut config)
+        quiche::connect(domain, &scid, local_addr, peer_addr, &mut config)
             .unwrap();
 
     if let Some(keylog) = &mut keylog {
@@ -185,7 +186,7 @@ fn main() {
 
     // Enable oportunist acknowledgments.
     let mut oack = if args.do_oack {
-        conn.enable_oack(1000);
+        conn.enable_oack(10);
         Some(
             OpportunistAck::new(
                 args.qlog_path.as_deref(),
@@ -293,6 +294,11 @@ fn main() {
                     continue 'read;
                 },
             };
+        }
+
+        if let Some(oack) = oack.as_mut() {
+            let max_pn = conn.oack_get_max_pn();
+            oack.on_new_max_recv_pn(max_pn);
         }
 
         if conn.is_established() {
@@ -467,7 +473,7 @@ fn main() {
         }
 
         if conn.is_closed() {
-            info!("connection closed, {:?}", conn.stats());
+            println!("connection closed, {:?}", conn.stats());
             break;
         }
     }

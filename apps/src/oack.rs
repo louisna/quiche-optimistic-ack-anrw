@@ -203,6 +203,15 @@ pub struct OpportunistMaxPn {
     /// Potential lag before adding shifting to the maximum received packet
     /// number.
     lag_shift: Option<u64>,
+
+    /// The true last maximum packet number we received.
+    true_last_recv_pn: u64,
+
+    /// The true last maximum packet number at which we sent an OACK.
+    true_last_pn_oack: u64,
+
+    /// First application packet number.
+    first_app_pn: Option<u64>,
 }
 
 impl OpportunistMaxPn {
@@ -214,23 +223,37 @@ impl OpportunistMaxPn {
             active: false,
             shift_pn,
             lag_shift: shift_pn.map(|_| lag_shift).flatten(),
+            true_last_recv_pn: 0,
+            true_last_pn_oack: 0,
+            first_app_pn: None,
         }
     }
 
     pub fn timeout(&self) -> Option<Duration> {
-        (self.last_max_pn != self.next_max_pn).then_some(Duration::ZERO)
+        (self.true_last_recv_pn != self.true_last_pn_oack).then_some(Duration::ZERO)
     }
 
     pub fn on_timeout(
         &mut self, conn: &mut Connection, stream_id: u64,
     ) -> Result<(), Box<dyn Error>> {
+        if self.first_app_pn.is_none() {
+            return Ok(());
+        }
+
+        // Avoid injecting acknowledgment if we do not have a first non-zero value.
+        if Some(self.next_max_pn) < self.first_app_pn {
+            return Ok(());
+        }
+
         if let Some(Duration::ZERO) = self.timeout() {
-            let range = 0..self.next_max_pn;
+            let range = self.first_app_pn.unwrap()..self.next_max_pn;
+            // println!("Send OACK ranges: {:?}", range);
 
             let now = Instant::now();
-            conn.insert_oack_app(range, now, stream_id, self.last_max_pn)?;
+            let _ = conn.insert_oack_app(range, now, stream_id, self.last_max_pn);
 
             self.last_max_pn = self.next_max_pn;
+            self.true_last_pn_oack = self.true_last_recv_pn;
         }
 
         Ok(())
@@ -245,14 +268,37 @@ impl OpportunistMaxPn {
     }
 
     pub fn on_new_max_recv_pn(&mut self, pn: u64) {
+        // Avoid computing twice the same.
+        if pn == self.true_last_recv_pn {
+            return;
+        }
+
+        self.true_last_recv_pn = pn;
+        if self.first_app_pn.is_none() && pn > 0 {
+            self.first_app_pn = Some(pn);
+        }
+        if self.first_app_pn.is_none() {
+            return;
+        }
+
         let shift_pn = self
             .lag_shift
-            .map(|lag| lag >= pn)
+            .map(|lag| lag + self.first_app_pn.unwrap() < pn)
             .unwrap_or(true)
             .then_some(self.shift_pn)
-            .flatten()
-            .unwrap_or(0);
-        self.next_max_pn = std::cmp::max(self.next_max_pn, pn + shift_pn);
+            .flatten();
+        // println!("Recv packet: {pn} so will we shift: {:?} + {:?} < {:?} = {:?}", self.lag_shift, self.first_app_pn, pn, shift_pn.is_some());
+        if let Some(shift) = shift_pn {
+            self.shift_pn = self.shift_pn.map(|n| std::cmp::min(15_000, if n < 400 {
+                n + 3
+            } else {
+                // (n as f64 * 1.01) as u64
+                n + 5
+            }));
+            // self.shift_pn = self.shift_pn.map(|n| std::cmp::min(n + 5, 100_000_000));
+            self.next_max_pn = std::cmp::max(self.next_max_pn, pn + shift);
+            // println!("Set next_max_pn={} because pn={} and shift={}", self.next_max_pn, pn, shift);
+        }
     }
 }
 
