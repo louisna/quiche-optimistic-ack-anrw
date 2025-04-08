@@ -212,6 +212,9 @@ pub struct OpportunistMaxPn {
 
     /// First application packet number.
     first_app_pn: Option<u64>,
+
+    /// Last increase of the `shift_pn`.
+    last_increase: u64,
 }
 
 impl OpportunistMaxPn {
@@ -226,11 +229,13 @@ impl OpportunistMaxPn {
             true_last_recv_pn: 0,
             true_last_pn_oack: 0,
             first_app_pn: None,
+            last_increase: 0,
         }
     }
 
     pub fn timeout(&self) -> Option<Duration> {
-        (self.true_last_recv_pn != self.true_last_pn_oack).then_some(Duration::ZERO)
+        (self.true_last_recv_pn != self.true_last_pn_oack)
+            .then_some(Duration::ZERO)
     }
 
     pub fn on_timeout(
@@ -240,14 +245,21 @@ impl OpportunistMaxPn {
             return Ok(());
         }
 
-        // Avoid injecting acknowledgment if we do not have a first non-zero value.
+        // Avoid injecting acknowledgment if we do not have a first non-zero
+        // value.
         if Some(self.next_max_pn) < self.first_app_pn {
             return Ok(());
         }
 
         if let Some(Duration::ZERO) = self.timeout() {
             let range = self.first_app_pn.unwrap()..self.next_max_pn;
-            // println!("Send OACK ranges: {:?}", range);
+            println!(
+                "Send OACK ranges: {:?} and max received is {} so the diff is {}. Shift={:?}",
+                range,
+                self.true_last_recv_pn,
+                self.next_max_pn.saturating_sub(self.true_last_pn_oack),
+                self.shift_pn
+            );
 
             let now = Instant::now();
             let _ = conn.insert_oack_app(range, now, stream_id, self.last_max_pn);
@@ -287,17 +299,102 @@ impl OpportunistMaxPn {
             .unwrap_or(true)
             .then_some(self.shift_pn)
             .flatten();
-        // println!("Recv packet: {pn} so will we shift: {:?} + {:?} < {:?} = {:?}", self.lag_shift, self.first_app_pn, pn, shift_pn.is_some());
-        if let Some(shift) = shift_pn {
-            self.shift_pn = self.shift_pn.map(|n| std::cmp::min(15_000, if n < 400 {
-                n + 3
+        // println!("Recv packet: {pn} so will we shift: {:?} + {:?} < {:?} =
+        // {:?}", self.lag_shift, self.first_app_pn, pn, shift_pn.is_some());
+        if let Some(n) = shift_pn {
+            let how_much = if n < 100 {
+                n + 2
+            } else if n < 4_000 {
+                // (n as f64 * 1.03) as u64
+                n + 2
             } else {
-                // (n as f64 * 1.01) as u64
-                n + 5
-            }));
-            // self.shift_pn = self.shift_pn.map(|n| std::cmp::min(n + 5, 100_000_000));
-            self.next_max_pn = std::cmp::max(self.next_max_pn, pn + shift);
-            // println!("Set next_max_pn={} because pn={} and shift={}", self.next_max_pn, pn, shift);
+                n + self.last_increase
+            };
+
+            // Use this with neqo.
+            // let how_much = if pn % 2 == 0 { n + 2 } else { n };
+
+            let new_shift = Some(how_much);
+            self.last_increase =
+                new_shift.unwrap().saturating_sub(self.shift_pn.unwrap());
+            self.shift_pn = new_shift;
+
+            // self.shift_pn = self.shift_pn.map(|n| std::cmp::min(n + 5,
+            // 100_000_000));
+            self.next_max_pn =
+                std::cmp::max(self.next_max_pn, pn + self.shift_pn.unwrap());
+            // println!("Set next_max_pn={} because pn={} and shift={}",
+            // self.next_max_pn, pn, shift);
+        }
+    }
+}
+
+/// Optimistic acknowledgment with a constant range.
+/// Used to test if implementations do verify the correctness of the received
+/// ACK frames.
+pub struct OpportunistConstant {
+    /// Range to advertise.
+    range: Range<u64>,
+
+    /// Whether a new packet was received since the last acknowledgment.
+    new_recv: bool,
+
+    /// First application packet number.
+    first_app_pn: Option<u64>,
+
+    /// Lag before sending the OACK.
+    lag: Option<u64>,
+}
+
+impl OpportunistConstant {
+    pub fn new(range: Range<u64>, lag: Option<u64>) -> Self {
+        Self {
+            range,
+            new_recv: false,
+            first_app_pn: None,
+            lag,
+        }
+    }
+
+    fn timeout(&self) -> Option<Duration> {
+        self.new_recv.then_some(Duration::ZERO)
+    }
+
+    fn on_timeout(
+        &mut self, conn: &mut Connection, stream_id: u64,
+    ) -> Result<(), Box<dyn Error>> {
+        if self.timeout() == Some(Duration::ZERO) {
+            let now = Instant::now();
+            println!("Insert range: {:?}", self.range);
+            self.new_recv = false;
+            conn.insert_oack_app(
+                self.range.clone(),
+                now,
+                stream_id,
+                self.range.end,
+            )?;
+        }
+
+        Ok(())
+    }
+
+    fn is_active(&self) -> bool {
+        true
+    }
+
+    fn set_active(&mut self) {
+        ()
+    }
+
+    fn on_new_max_recv_pn(&mut self, pn: u64) {
+        if self.first_app_pn.is_none() {
+            self.first_app_pn = Some(pn);
+            self.range = self.range.start.saturating_add(pn)..
+                self.range.end.saturating_add(pn);
+        }
+
+        if Some(pn.saturating_sub(self.first_app_pn.unwrap())) > self.lag {
+            self.new_recv = true;
         }
     }
 }
@@ -309,6 +406,9 @@ pub enum OpportunistAck {
     /// Using the maximum received packet number.
     /// Potentially shift the maximum received packet number with som lag.
     MaxPn(OpportunistMaxPn),
+
+    /// Constant range.
+    Constant(OpportunistConstant),
 }
 
 impl OpportunistAck {
@@ -327,6 +427,7 @@ impl OpportunistAck {
         match self {
             Self::QLOG(q) => q.timeout(),
             Self::MaxPn(m) => m.timeout(),
+            Self::Constant(c) => c.timeout(),
         }
     }
 
@@ -336,6 +437,7 @@ impl OpportunistAck {
         match self {
             Self::QLOG(q) => q.on_timeout(conn, stream_id),
             Self::MaxPn(m) => m.on_timeout(conn, stream_id),
+            Self::Constant(c) => c.on_timeout(conn, stream_id),
         }
     }
 
@@ -343,6 +445,7 @@ impl OpportunistAck {
         match self {
             Self::QLOG(q) => q.is_active(),
             Self::MaxPn(m) => m.is_active(),
+            Self::Constant(c) => c.is_active(),
         }
     }
 
@@ -350,6 +453,7 @@ impl OpportunistAck {
         match self {
             Self::QLOG(q) => q.set_active(v),
             Self::MaxPn(m) => m.set_active(v),
+            Self::Constant(c) => c.set_active(),
         }
     }
 
@@ -357,6 +461,7 @@ impl OpportunistAck {
         match self {
             Self::QLOG(_q) => (),
             Self::MaxPn(m) => m.on_new_max_recv_pn(pn),
+            Self::Constant(c) => c.on_new_max_recv_pn(pn),
         }
     }
 }

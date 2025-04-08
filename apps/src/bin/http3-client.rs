@@ -30,6 +30,7 @@ extern crate log;
 use clap::Parser;
 use quiche_apps::common::make_qlog_writer;
 use quiche_apps::oack::OpportunistAck;
+use quiche_apps::oack::OpportunistConstant;
 use std::net::ToSocketAddrs;
 
 use quiche::h3::NameValue;
@@ -63,6 +64,11 @@ struct Args {
     /// OACK packet number lag shift.
     #[clap(long = "lag-shift")]
     lag_shift: Option<u64>,
+
+    /// Use constant range instead for OACK.
+    /// The value indicates the end of the range.
+    #[clap(long = "constant-oack")]
+    constant_oack: Option<u64>,
 }
 
 fn main() {
@@ -187,14 +193,20 @@ fn main() {
     // Enable oportunist acknowledgments.
     let mut oack = if args.do_oack {
         conn.enable_oack(10);
-        Some(
-            OpportunistAck::new(
-                args.qlog_path.as_deref(),
-                args.shift_pn,
-                args.lag_shift,
+        if let Some(end_range) = args.constant_oack {
+            Some(OpportunistAck::Constant(OpportunistConstant::new(
+                0..end_range, args.lag_shift,
+            )))
+        } else {
+            Some(
+                OpportunistAck::new(
+                    args.qlog_path.as_deref(),
+                    args.shift_pn,
+                    args.lag_shift,
+                )
+                .unwrap(),
             )
-            .unwrap(),
-        )
+        }
     } else {
         None
     };
