@@ -285,7 +285,7 @@ impl OpportunistMaxPn {
             return;
         }
 
-        self.true_last_recv_pn = pn;
+        self.true_last_recv_pn += 1;
         if self.first_app_pn.is_none() && pn > 0 {
             self.first_app_pn = Some(pn);
         }
@@ -302,11 +302,11 @@ impl OpportunistMaxPn {
         // println!("Recv packet: {pn} so will we shift: {:?} + {:?} < {:?} =
         // {:?}", self.lag_shift, self.first_app_pn, pn, shift_pn.is_some());
         if let Some(n) = shift_pn {
-            let how_much = if n < 100 {
-                n + 2
-            } else if n < 4_000 {
+            let how_much = if n < 400 {
+                n + 4
+            } else if n < 10_000 {
                 // (n as f64 * 1.03) as u64
-                n + 2
+                n + 100
             } else {
                 n + self.last_increase
             };

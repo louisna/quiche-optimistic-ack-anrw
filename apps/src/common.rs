@@ -1252,37 +1252,37 @@ impl HttpConn for Http3Conn {
                     while let Ok(read) =
                         self.h3_conn.recv_body(conn, stream_id, buf)
                     {
-                        debug!(
+                        println!(
                             "got {} bytes of response data on stream {}",
                             read, stream_id
                         );
 
-                        let req = self
-                            .reqs
-                            .iter_mut()
-                            .find(|r| r.stream_id == Some(stream_id))
-                            .unwrap();
+                        // let req = self
+                        //     .reqs
+                        //     .iter_mut()
+                        //     .find(|r| r.stream_id == Some(stream_id))
+                        //     .unwrap();
 
-                        let len = std::cmp::min(
-                            read,
-                            req.response_body_max - req.response_body.len(),
-                        );
-                        req.response_body.extend_from_slice(&buf[..len]);
+                        // let len = std::cmp::min(
+                        //     read,
+                        //     req.response_body_max - req.response_body.len(),
+                        // );
+                        // req.response_body.extend_from_slice(&buf[..len]);
 
-                        match &mut req.response_writer {
-                            Some(rw) => {
-                                rw.write_all(&buf[..read]).ok();
-                            },
+                        // match &mut req.response_writer {
+                        //     Some(rw) => {
+                        //         rw.write_all(&buf[..read]).ok();
+                        //     },
 
-                            None =>
-                                if !self.dump_json {
-                                    self.output_sink.borrow_mut()(unsafe {
-                                        String::from_utf8_unchecked(
-                                            buf[..read].to_vec(),
-                                        )
-                                    });
-                                },
-                        }
+                        //     None =>
+                        //         if !self.dump_json {
+                        //             self.output_sink.borrow_mut()(unsafe {
+                        //                 String::from_utf8_unchecked(
+                        //                     buf[..read].to_vec(),
+                        //                 )
+                        //             });
+                        //         },
+                        // }
                     }
                 },
 

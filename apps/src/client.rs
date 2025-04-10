@@ -234,7 +234,8 @@ pub fn connect(
     // Enable optimist acknowledgments.
     let mut oack = if let Some(_qlog_file) = args.oack {
         conn.enable_oack(1000);
-        Some(OpportunistAck::new(None, None, None).unwrap())
+        println!("ENABLE OACK");
+        Some(OpportunistAck::new(None, Some(0), Some(50)).unwrap())
     } else {
         None
     };
@@ -300,6 +301,7 @@ pub fn connect(
             };
 
             let local_addr = socket.local_addr().unwrap();
+            let mut n_recv = 0;
             'read: loop {
                 let (len, from) = match socket.recv_from(&mut buf) {
                     Ok(v) => v,
@@ -346,7 +348,12 @@ pub fn connect(
                     },
                 };
 
-                trace!("{}: processed {} bytes", local_addr, read);
+                println!("{}: processed {} bytes", local_addr, read);
+
+                n_recv += 1;
+                if n_recv > 20 {
+                    break 'read;
+                }
             }
 
             if let Some(oack) = oack.as_mut() {
