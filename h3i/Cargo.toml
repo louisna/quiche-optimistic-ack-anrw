@@ -12,7 +12,7 @@ license = "BSD-2-Clause"
 rust-version = "1.67"
 
 [dependencies]
-clap = "3"
+clap = "4"
 env_logger = "0.6"
 inquire = "0.6.2"
 log = { version = "0.4", features = ["std"] }
